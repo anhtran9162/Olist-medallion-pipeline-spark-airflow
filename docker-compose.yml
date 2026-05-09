@@ -1,0 +1,63 @@
+services:
+  hadoop:
+    image: apache/hadoop:3.3.6
+    container_name: olist-hadoop
+    hostname: namenode
+    user: root
+    environment:
+      ENSURE_NAMENODE_DIR: "true"
+    ports:
+      - "9870:9870"
+      - "8020:8020"
+      - "9000:9000"
+      - "8088:8088"
+      - "8042:8042"
+    volumes:
+      - hadoop_namenode:/opt/hadoop/hdfs/namenode
+      - hadoop_datanode:/opt/hadoop/hdfs/datanode
+      - ./config/hadoop:/opt/hadoop/etc/hadoop-custom:ro
+      - ./data/brazilian-ecommerce:/opt/hadoop/data:ro
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        cp /opt/hadoop/etc/hadoop-custom/core-site.xml /opt/hadoop/etc/hadoop/
+        cp /opt/hadoop/etc/hadoop-custom/hdfs-site.xml /opt/hadoop/etc/hadoop/
+        cp /opt/hadoop/etc/hadoop-custom/mapred-site.xml /opt/hadoop/etc/hadoop/
+        cp /opt/hadoop/etc/hadoop-custom/yarn-site.xml /opt/hadoop/etc/hadoop/
+
+        chown -R hadoop:hadoop /opt/hadoop/hdfs
+
+        if [ ! -d /opt/hadoop/hdfs/namenode/current ]; then
+          su -s /bin/bash hadoop -c "/opt/hadoop/bin/hdfs namenode -format -force"
+        fi
+
+        su -s /bin/bash hadoop -c "/opt/hadoop/bin/hdfs --daemon start namenode"
+        su -s /bin/bash hadoop -c "/opt/hadoop/bin/hdfs --daemon start datanode"
+        su -s /bin/bash hadoop -c "/opt/hadoop/bin/yarn --daemon start resourcemanager"
+        su -s /bin/bash hadoop -c "/opt/hadoop/bin/yarn --daemon start nodemanager"
+
+        echo 'Waiting for HDFS to exit safemode...'
+        for i in $(seq 1 30); do
+          if su -s /bin/bash hadoop -c "/opt/hadoop/bin/hdfs dfsadmin -safemode get" | grep -q 'OFF'; then
+            echo 'HDFS is out of safemode.'
+            break
+          fi
+          echo "Safemode is ON, retry $i/30..."
+          sleep 2
+        done
+
+        su -s /bin/bash hadoop -c "/opt/hadoop/bin/hdfs dfs -mkdir -p /data/bronze"
+        su -s /bin/bash hadoop -c "/opt/hadoop/bin/hdfs dfs -chmod -R 777 /data"
+
+        echo 'Hadoop pseudo-distributed cluster is ready.'
+        tail -f /dev/null
+    networks:
+      - olist-net
+
+volumes:
+  hadoop_namenode:
+  hadoop_datanode:
+
+networks:
+  olist-net:
+    driver: bridge
