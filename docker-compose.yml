@@ -47,6 +47,8 @@ services:
         done
 
         su -s /bin/bash hadoop -c "/opt/hadoop/bin/hdfs dfs -mkdir -p /data/bronze"
+        su -s /bin/bash hadoop -c "/opt/hadoop/bin/hdfs dfs -mkdir -p /data/bronze/stream_archive"
+        su -s /bin/bash hadoop -c "/opt/hadoop/bin/hdfs dfs -mkdir -p /data/silver"
         su -s /bin/bash hadoop -c "/opt/hadoop/bin/hdfs dfs -chmod -R 777 /data"
 
         echo 'Hadoop pseudo-distributed cluster is ready.'
@@ -54,9 +56,162 @@ services:
     networks:
       - olist-net
 
+  postgres:
+    image: postgres:16
+    container_name: olist-postgres
+    hostname: postgres
+    environment:
+      POSTGRES_USER: olist
+      POSTGRES_PASSWORD: olist123
+      POSTGRES_DB: olist_dw
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/gold_schema.sql:/docker-entrypoint-initdb.d/01_gold_schema.sql
+      - ./sql/init_airflow_db.sql:/docker-entrypoint-initdb.d/02_init_airflow_db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U olist -d olist_dw"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - olist-net
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: olist-zookeeper
+    hostname: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_logs:/var/lib/zookeeper/log
+    networks:
+      - olist-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: olist-kafka
+    hostname: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    networks:
+      - olist-net
+
+  spark-master:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    container_name: olist-spark-master
+    hostname: spark-master
+    environment:
+      SPARK_MODE: master
+      SPARK_MASTER_HOST: spark-master
+    ports:
+      - "18080:8080"
+      - "7077:7077"
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs
+      - ./config/spark/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf
+    depends_on:
+      - hadoop
+      - kafka
+      - postgres
+    networks:
+      - olist-net
+
+  spark-worker:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    container_name: olist-spark-worker
+    hostname: spark-worker
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER: spark://spark-master:7077
+      SPARK_WORKER_MEMORY: 2g
+      SPARK_WORKER_CORES: 2
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs
+    depends_on:
+      - spark-master
+    networks:
+      - olist-net
+
+  airflow:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: olist-airflow
+    hostname: airflow
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://olist:olist123@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        airflow db init
+        airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true
+        airflow webserver & airflow scheduler
+    networks:
+      - olist-net
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: olist-api
+    hostname: api
+    ports:
+      - "8000:8000"
+    volumes:
+      - api_data:/app/data
+      - ./data/brazilian-ecommerce:/app/csv_data:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - olist-net
+
 volumes:
   hadoop_namenode:
   hadoop_datanode:
+  postgres_data:
+  zookeeper_data:
+  zookeeper_logs:
+  kafka_data:
+  api_data:
 
 networks:
   olist-net:
