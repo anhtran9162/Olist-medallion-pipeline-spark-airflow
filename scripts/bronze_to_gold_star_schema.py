@@ -120,12 +120,16 @@ dim_order_status.insert(0, "status_key", range(1, len(dim_order_status) + 1))
 dim_order_status.rename(columns={"order_status": "status_name"}, inplace=True)
 
 # --- dim_date ---
-# Extract every distinct calendar date that appears in order_purchase_timestamp.
+# Extract every distinct calendar date that appears across key order timestamps.
 # date_key is an integer in YYYYMMDD format.
+date_sources = pd.concat([
+    orders["order_purchase_timestamp"],
+    orders["order_estimated_delivery_date"],
+    orders["order_delivered_customer_date"],
+]).dropna().dt.normalize()
+
 distinct_dates = (
-    orders["order_purchase_timestamp"]
-    .dropna()
-    .dt.normalize()       # strip time component
+    date_sources
     .drop_duplicates()
     .sort_values()
     .reset_index(drop=True)
@@ -183,6 +187,20 @@ fct["order_date_key"] = (
     .astype("Int64")      # nullable Int64 to handle NaT gracefully
 )
 
+# estimated_delivery_date_key: derive from order_estimated_delivery_date → date_key
+fct["estimated_delivery_date_key"] = (
+    fct["order_estimated_delivery_date"]
+    .dt.strftime("%Y%m%d")
+    .astype("Int64")
+)
+
+# delivered_date_key: derive from order_delivered_customer_date → date_key
+fct["delivered_date_key"] = (
+    fct["order_delivered_customer_date"]
+    .dt.strftime("%Y%m%d")
+    .astype("Int64")
+)
+
 # --- Logistics metrics ---
 # processing_time_hours: approved → handed to carrier (hours)
 fct["processing_time_hours"] = (
@@ -203,7 +221,8 @@ fct["shipping_time_days"] = fct["shipping_time_days"].round(2)
 fct_order_items = fct[[
     "order_id",
     "customer_key", "product_key", "seller_key",
-    "order_date_key", "status_key",
+    "order_date_key", "estimated_delivery_date_key", "delivered_date_key",
+    "status_key",
     "price", "freight_value",
     "review_score",
     "processing_time_hours", "shipping_time_days",

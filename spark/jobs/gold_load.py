@@ -35,6 +35,17 @@ def read_silver(spark, table_name):
     return spark.read.parquet(f"{HDFS_SILVER}/{table_name}")
 
 
+def drop_fct_if_exists(spark):
+    """Drop fct_order_items CASCADE so dimension overwrites don't violate FK constraints."""
+    jvm = spark._jvm
+    conn = jvm.java.sql.DriverManager.getConnection(PG_URL, PG_USER, PG_PASSWORD)
+    stmt = conn.createStatement()
+    stmt.execute("DROP TABLE IF EXISTS fct_order_items CASCADE")
+    stmt.close()
+    conn.close()
+    print("  Dropped fct_order_items (if existed) to release FK constraints")
+
+
 def write_to_postgres(df, table_name):
     """Write a DataFrame to PostgreSQL, overwriting existing data."""
     df.write.jdbc(url=PG_URL, table=table_name, mode="overwrite", properties=PG_PROPERTIES)
@@ -108,11 +119,22 @@ def build_dim_order_status(spark):
 
 
 def build_dim_date(spark):
-    """Build dim_date from order purchase timestamps."""
+    """Build dim_date from order purchase, estimated delivery, and delivered dates."""
     orders = read_silver(spark, "olist_orders_dataset")
 
+    purchase_dates = orders.select(
+        F.to_date("order_purchase_timestamp").alias("full_date")
+    )
+    estimated_dates = orders.select(
+        F.to_date("order_estimated_delivery_date").alias("full_date")
+    )
+    delivered_dates = orders.select(
+        F.to_date("order_delivered_customer_date").alias("full_date")
+    )
+
     distinct_dates = (
-        orders.select(F.to_date("order_purchase_timestamp").alias("full_date"))
+        purchase_dates.unionByName(estimated_dates)
+        .unionByName(delivered_dates)
         .filter(F.col("full_date").isNotNull())
         .distinct()
         .orderBy("full_date")
@@ -194,6 +216,18 @@ def build_fct_order_items(spark, dim_customers, dim_products, dim_sellers,
         F.date_format("order_purchase_timestamp", "yyyyMMdd").cast("int"),
     )
 
+    # estimated_delivery_date_key from estimated delivery date
+    fct = fct.withColumn(
+        "estimated_delivery_date_key",
+        F.date_format("order_estimated_delivery_date", "yyyyMMdd").cast("int"),
+    )
+
+    # delivered_date_key from actual customer delivery date
+    fct = fct.withColumn(
+        "delivered_date_key",
+        F.date_format("order_delivered_customer_date", "yyyyMMdd").cast("int"),
+    )
+
     # Compute logistics metrics
     fct = fct.withColumn(
         "processing_time_hours",
@@ -214,7 +248,8 @@ def build_fct_order_items(spark, dim_customers, dim_products, dim_sellers,
     result = fct.select(
         "order_id",
         "customer_key", "product_key", "seller_key",
-        "order_date_key", "status_key",
+        "order_date_key", "estimated_delivery_date_key", "delivered_date_key",
+        "status_key",
         F.col("price").alias("item_price"),
         "freight_value",
         "review_score",
@@ -228,7 +263,8 @@ def build_fct_order_items(spark, dim_customers, dim_products, dim_sellers,
     result = result.select(
         "order_item_key", "order_id",
         "customer_key", "product_key", "seller_key",
-        "order_date_key", "status_key",
+        "order_date_key", "estimated_delivery_date_key", "delivered_date_key",
+        "status_key",
         "item_price", "freight_value",
         "review_score", "processing_time_hours", "shipping_time_days",
     )
@@ -261,6 +297,7 @@ def main():
 
     # Write to PostgreSQL
     print("Writing to PostgreSQL...")
+    drop_fct_if_exists(spark)
     write_to_postgres(dim_customers, "dim_customers")
     write_to_postgres(dim_sellers, "dim_sellers")
     write_to_postgres(dim_products, "dim_products")

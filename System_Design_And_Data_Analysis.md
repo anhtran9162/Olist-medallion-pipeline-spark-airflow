@@ -96,6 +96,8 @@ Cấu trúc ban đầu của tập dữ liệu Olist được cung cấp dưới
 | product\_key | INT | Khóa ngoại chỉ hướng đến bảng dim\_products. |
 | seller\_key | INT | Khóa ngoại chỉ hướng đến bảng dim\_sellers. |
 | order\_date\_key | INT | Khóa ngoại thông minh (định dạng YYYYMMDD) trỏ về dim\_date, đại diện cho thời điểm giao dịch phát sinh. |
+| estimated\_delivery\_date\_key | INT | Khóa ngoại thông minh trỏ về dim\_date, đại diện cho ngày giao hàng dự kiến ban đầu (order\_estimated\_delivery\_date). Hỗ trợ tính toán KPI giao hàng đúng hạn (On-Time Delivery Rate). |
+| delivered\_date\_key | INT | Khóa ngoại thông minh trỏ về dim\_date, đại diện cho ngày khách hàng thực nhận hàng (order\_delivered\_customer\_date). Cho phép phân tích chênh lệch thời gian giao hàng thực tế so với dự kiến. |
 | status\_key | INT | Khóa ngoại chỉ hướng đến bảng dim\_order\_status. |
 | item\_price | NUMERIC(10,2) | Thước đo tài chính cốt lõi: Giá bán niêm yết của sản phẩm.6 |
 | freight\_value | NUMERIC(10,2) | Thước đo logistics: Chi phí vận chuyển được phân bổ cho sản phẩm này.6 |

@@ -1,20 +1,19 @@
 """
 Olist Medallion Pipeline DAG.
 
-Orchestrates the full Bronze → Silver → Gold data pipeline:
+Orchestrates the full Bronze -> Silver -> Gold data pipeline:
 1. init_api — health check on FastAPI
-2. bronze_batch_ingest — fetch 90% data from API → HDFS Bronze
+2. bronze_batch_ingest — fetch 90% data from API -> HDFS Bronze
 3. kafka_producer — stream 10% orders to Kafka
-4. bronze_stream_archive — archive Kafka events to HDFS Bronze (continuous)
-5. silver_clean — Bronze → Silver (cleanse, NLP, impute)
-6. gold_load — Silver → PostgreSQL Gold (star schema)
+4. bronze_stream_archive — archive Kafka events to HDFS Bronze (batch mode)
+5. silver_clean — Bronze -> Silver (cleanse, NLP, impute)
+6. gold_load — Silver -> PostgreSQL Gold (star schema)
 """
 
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
-from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 import requests
 
 
@@ -25,8 +24,10 @@ default_args = {
     "retry_delay": timedelta(minutes=2),
 }
 
+SPARK_SUBMIT = "docker exec olist-spark-master /opt/spark/bin/spark-submit"
 SPARK_MASTER = "spark://spark-master:7077"
 SPARK_JOBS_DIR = "/opt/spark/jobs"
+HDFS_CONF = "--conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 --conf spark.hadoop.dfs.client.use.datanode.hostname=true"
 
 
 def check_api_health(**context):
@@ -39,7 +40,7 @@ def check_api_health(**context):
 with DAG(
     dag_id="olist_medallion_pipeline",
     default_args=default_args,
-    description="Olist Medallion Architecture: Bronze → Silver → Gold",
+    description="Olist Medallion Architecture: Bronze -> Silver -> Gold",
     schedule=None,
     start_date=datetime(2024, 1, 1),
     catchup=False,
@@ -51,18 +52,14 @@ with DAG(
         python_callable=check_api_health,
     )
 
-    bronze_batch_ingest = SparkSubmitOperator(
+    bronze_batch_ingest = BashOperator(
         task_id="bronze_batch_ingest",
-        application=f"{SPARK_JOBS_DIR}/bronze_ingest.py",
-        master=SPARK_MASTER,
-        conn_id="spark_default",
-        conf={
-            "spark.hadoop.fs.defaultFS": "hdfs://namenode:9000",
-            "spark.hadoop.dfs.client.use.datanode.hostname": "true",
-        },
-        env_vars={
-            "API_BASE": "http://api:8000/api/v1",
-        },
+        bash_command=(
+            f"{SPARK_SUBMIT} "
+            f"--master {SPARK_MASTER} {HDFS_CONF} "
+            f"--conf spark.executorEnv.API_BASE=http://api:8000/api/v1 "
+            f"{SPARK_JOBS_DIR}/bronze_ingest.py"
+        ),
     )
 
     kafka_producer = BashOperator(
@@ -77,46 +74,36 @@ with DAG(
         },
     )
 
-    bronze_stream_archive = SparkSubmitOperator(
+    bronze_stream_archive = BashOperator(
         task_id="bronze_stream_archive",
-        application=f"{SPARK_JOBS_DIR}/bronze_stream_archive.py",
-        master=SPARK_MASTER,
-        conn_id="spark_default",
-        conf={
-            "spark.hadoop.fs.defaultFS": "hdfs://namenode:9000",
-            "spark.hadoop.dfs.client.use.datanode.hostname": "true",
-            "spark.jars.packages": "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1",
-        },
-        env_vars={
-            "KAFKA_BOOTSTRAP": "kafka:29092",
-        },
+        bash_command=(
+            f"{SPARK_SUBMIT} "
+            f"--master {SPARK_MASTER} {HDFS_CONF} "
+            f"--conf spark.executorEnv.KAFKA_BOOTSTRAP=kafka:29092 "
+            f"--conf spark.streaming.stopGracefullyOnShutdown=true "
+            f"{SPARK_JOBS_DIR}/bronze_stream_archive.py & "
+            "STREAM_PID=$! && sleep 120 && kill $STREAM_PID 2>/dev/null && wait $STREAM_PID 2>/dev/null; "
+            "exit 0"
+        ),
     )
 
-    silver_clean = SparkSubmitOperator(
+    silver_clean = BashOperator(
         task_id="silver_clean",
-        application=f"{SPARK_JOBS_DIR}/silver_clean.py",
-        master=SPARK_MASTER,
-        conn_id="spark_default",
-        conf={
-            "spark.hadoop.fs.defaultFS": "hdfs://namenode:9000",
-            "spark.hadoop.dfs.client.use.datanode.hostname": "true",
-        },
+        bash_command=(
+            f"{SPARK_SUBMIT} "
+            f"--master {SPARK_MASTER} {HDFS_CONF} "
+            f"{SPARK_JOBS_DIR}/silver_clean.py"
+        ),
     )
 
-    gold_load = SparkSubmitOperator(
+    gold_load = BashOperator(
         task_id="gold_load",
-        application=f"{SPARK_JOBS_DIR}/gold_load.py",
-        master=SPARK_MASTER,
-        conn_id="spark_default",
-        conf={
-            "spark.hadoop.fs.defaultFS": "hdfs://namenode:9000",
-            "spark.hadoop.dfs.client.use.datanode.hostname": "true",
-        },
-        env_vars={
-            "PG_URL": "jdbc:postgresql://postgres:5432/olist_dw",
-            "PG_USER": "olist",
-            "PG_PASSWORD": "olist123",
-        },
+        bash_command=(
+            f"{SPARK_SUBMIT} "
+            f"--master {SPARK_MASTER} {HDFS_CONF} "
+            f"--conf spark.jars=/opt/spark/jars/postgresql-42.7.3.jar "
+            f"{SPARK_JOBS_DIR}/gold_load.py"
+        ),
     )
 
     # DAG dependencies

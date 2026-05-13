@@ -4,6 +4,9 @@ End-to-end Big Data pipeline for the [Brazilian E-Commerce Public Dataset by Oli
 
 ## Architecture Overview
 
+![Architecture High-Level Design](img/Architecture_Skew.png)
+
+
 ```
                           ┌─────────────┐
                           │  CSV Files   │
@@ -178,6 +181,8 @@ Reads Bronze data (batch CSVs + stream archive Parquet), applies transformations
 | `product_key` | INT FK | → `dim_products` |
 | `seller_key` | INT FK | → `dim_sellers` |
 | `order_date_key` | INT FK | → `dim_date` (YYYYMMDD format) |
+| `estimated_delivery_date_key` | INT FK | → `dim_date` (estimated delivery date) |
+| `delivered_date_key` | INT FK | → `dim_date` (actual customer delivery date) |
 | `status_key` | INT FK | → `dim_order_status` |
 | `item_price` | NUMERIC(10,2) | Product price |
 | `freight_value` | NUMERIC(10,2) | Shipping cost |

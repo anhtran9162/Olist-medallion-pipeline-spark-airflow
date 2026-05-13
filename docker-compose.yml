@@ -7,11 +7,11 @@ services:
     environment:
       ENSURE_NAMENODE_DIR: "true"
     ports:
-      - "9870:9870"
-      - "8020:8020"
-      - "9000:9000"
-      - "8088:8088"
-      - "8042:8042"
+      - "19870:9870"
+      - "18020:8020"
+      - "19000:9000"
+      - "18088:8088"
+      - "18042:8042"
     volumes:
       - hadoop_namenode:/opt/hadoop/hdfs/namenode
       - hadoop_datanode:/opt/hadoop/hdfs/datanode
@@ -133,6 +133,11 @@ services:
     volumes:
       - ./spark/jobs:/opt/spark/jobs
       - ./config/spark/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        /opt/spark/sbin/start-master.sh
+        tail -f /opt/spark/logs/*.out
     depends_on:
       - hadoop
       - kafka
@@ -153,6 +158,11 @@ services:
       SPARK_WORKER_CORES: 2
     volumes:
       - ./spark/jobs:/opt/spark/jobs
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        /opt/spark/sbin/start-worker.sh spark://spark-master:7077
+        tail -f /opt/spark/logs/*.out
     depends_on:
       - spark-master
     networks:
@@ -169,10 +179,12 @@ services:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://olist:olist123@postgres:5432/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+      AIRFLOW_HOME: /opt/airflow
     ports:
       - "8082:8080"
     volumes:
       - ./airflow/dags:/opt/airflow/dags
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:
         condition: service_healthy

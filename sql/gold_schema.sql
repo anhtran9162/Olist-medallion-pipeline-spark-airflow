@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS fct_order_items (
     product_key INT REFERENCES dim_products(product_key),
     seller_key INT REFERENCES dim_sellers(seller_key),
     order_date_key INT REFERENCES dim_date(date_key),
+    estimated_delivery_date_key INT REFERENCES dim_date(date_key),
+    delivered_date_key INT REFERENCES dim_date(date_key),
     status_key INT REFERENCES dim_order_status(status_key),
     item_price NUMERIC(10,2),
     freight_value NUMERIC(10,2),
