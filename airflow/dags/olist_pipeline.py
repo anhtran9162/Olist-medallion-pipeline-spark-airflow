@@ -82,7 +82,10 @@ with DAG(
             f"--conf spark.executorEnv.KAFKA_BOOTSTRAP=kafka:29092 "
             f"--conf spark.streaming.stopGracefullyOnShutdown=true "
             f"{SPARK_JOBS_DIR}/bronze_stream_archive.py & "
-            "STREAM_PID=$! && sleep 120 && kill $STREAM_PID 2>/dev/null && wait $STREAM_PID 2>/dev/null; "
+            "STREAM_PID=$! && sleep 120 && "
+            "APP_ID=$(curl -s http://spark-master:8080/ | grep -B5 'Bronze-Stream-Archive' | grep -oP 'app-\\d+-\\d+' | head -1); "
+            "if [ -n \"$APP_ID\" ]; then curl -s -X POST 'http://spark-master:8080/app/kill/' -d \"id=$APP_ID&terminate=true\"; fi; "
+            "kill $STREAM_PID 2>/dev/null && wait $STREAM_PID 2>/dev/null; "
             "exit 0"
         ),
     )
