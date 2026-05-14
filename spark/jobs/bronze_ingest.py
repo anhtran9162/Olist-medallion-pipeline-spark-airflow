@@ -3,12 +3,15 @@ Bronze Batch Ingest: Fetch data from the FastAPI and write to HDFS Bronze layer.
 
 - All reference tables: 100% loaded (customers, products, sellers, etc.)
 - Orders table: first 90% loaded (chronological split; last 10% goes via Kafka)
+- Uses Delta Lake format with explicit schema enforcement
 """
 
 import os
 import requests
 from pyspark.sql import SparkSession
-from pyspark.sql.types import *
+from pyspark.sql.functions import current_timestamp, lit
+from schemas import BRONZE_SCHEMAS
+from data_quality import run_bronze_checks
 
 API_BASE = os.environ.get("API_BASE", "http://api:8000/api/v1")
 HDFS_BASE = "hdfs://namenode:9000/data/bronze"
@@ -47,6 +50,14 @@ def fetch_table(table_name: str, page_size: int = 5000):
     return all_rows
 
 
+def write_delta(df, hdfs_path):
+    """Write DataFrame as Delta Lake format with schema enforcement."""
+    df.write.format("delta") \
+        .mode("overwrite") \
+        .option("overwriteSchema", "true") \
+        .save(hdfs_path)
+
+
 def main():
     spark = SparkSession.builder \
         .appName("Bronze-Batch-Ingest") \
@@ -63,9 +74,11 @@ def main():
             print(f"  SKIP {table} — no data returned")
             continue
 
-        df = spark.createDataFrame(rows)
+        schema = BRONZE_SCHEMAS[table]
+        df = spark.createDataFrame(rows, schema=schema)
+        df = df.withColumn("ingestion_timestamp", current_timestamp())
         hdfs_path = f"{HDFS_BASE}/{table}"
-        df.write.mode("overwrite").option("header", True).csv(hdfs_path)
+        write_delta(df, hdfs_path)
         print(f"  {table}: {df.count()} rows → {hdfs_path}")
 
     # --- Load orders table (first 90% only) ---
@@ -78,10 +91,15 @@ def main():
 
     print(f"  Total orders: {len(all_orders)}, Batch (90%): {len(batch_orders)}, Stream (10%): {len(all_orders) - split_idx}")
 
-    df_orders = spark.createDataFrame(batch_orders)
+    schema = BRONZE_SCHEMAS[ORDERS_TABLE]
+    df_orders = spark.createDataFrame(batch_orders, schema=schema)
+    df_orders = df_orders.withColumn("ingestion_timestamp", current_timestamp())
     hdfs_path = f"{HDFS_BASE}/{ORDERS_TABLE}"
-    df_orders.write.mode("overwrite").option("header", True).csv(hdfs_path)
+    write_delta(df_orders, hdfs_path)
     print(f"  {ORDERS_TABLE}: {df_orders.count()} rows → {hdfs_path}")
+
+    # Run Bronze data quality checks
+    run_bronze_checks(spark)
 
     spark.stop()
     print("Bronze batch ingest complete.")

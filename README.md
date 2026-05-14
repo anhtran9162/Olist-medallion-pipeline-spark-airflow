@@ -43,20 +43,21 @@ End-to-end Big Data pipeline for the [Brazilian E-Commerce Public Dataset by Oli
      └──────────────────────┬───────────────────────────┘
                             │
                             ▼
-     ┌──────────────────────────────────────────────────┐
-     │              GOLD LAYER (PostgreSQL)              │
-     │  Star Schema:                                     │
-     │    dim_customers │ dim_sellers │ dim_products     │
-     │    dim_order_status │ dim_date                    │
-     │    fct_order_items (fact)                         │
-     └──────────────────────────────────────────────────┘
+     ┌──────────────────────────────────────────────────────────┐
+     │              GOLD LAYER (HDFS Parquet + PostgreSQL)      │
+     │  /data/gold/{dim/fct tables}/   ← Parquet files         │
+     │  Star Schema in PostgreSQL:                               │
+     │    dim_customers │ dim_sellers │ dim_products             │
+     │    dim_order_status │ dim_date                            │
+     │    fct_order_items (fact)                                 │
+     └──────────────────────────────────────────────────────────┘
 ```
 
 ## Services
 
 | Service | Image | Port | Role |
 |---|---|---|---|
-| `hadoop` | `apache/hadoop:3.3.6` | 9870, 9000 | HDFS storage (Bronze + Silver) |
+| `hadoop` | `apache/hadoop:3.3.6` | 9870, 9000 | HDFS storage (Bronze + Silver + Gold) |
 | `postgres` | `postgres:16` | 5432 | Gold layer data warehouse |
 | `zookeeper` | `confluentinc/cp-zookeeper:7.6.0` | 2181 | Kafka coordination |
 | `kafka` | `confluentinc/cp-kafka:7.6.0` | 9092, 29092 | Real-time streaming |
@@ -92,7 +93,7 @@ End-to-end Big Data pipeline for the [Brazilian E-Commerce Public Dataset by Oli
 │       ├── bronze_ingest.py             # API → HDFS Bronze (batch 90%)
 │       ├── bronze_stream_archive.py     # Kafka → HDFS Bronze (stream archive)
 │       ├── silver_clean.py             # Bronze → Silver (cleanse + NLP)
-│       └── gold_load.py                # Silver → PostgreSQL Gold
+│       └── gold_load.py                # Silver → HDFS Gold (Parquet) → PostgreSQL Gold
 ├── airflow/
 │   ├── Dockerfile
 │   └── dags/
@@ -169,7 +170,20 @@ Reads Bronze data (batch CSVs + stream archive Parquet), applies transformations
 | **NLP Pipeline** | Portuguese review text cleaning: lowercase → HTML tag removal → regex character normalization (preserving accented chars) → Portuguese stopword removal (200+ words) → whitespace normalization |
 | **Computed Columns** | `product_volume_cm3` = length × width × height |
 
-### 4. Gold Layer — PostgreSQL Star Schema
+### 4. Gold Layer — HDFS Parquet + PostgreSQL Star Schema
+
+Reads Silver Parquet from HDFS, builds star schema tables, writes Parquet to HDFS `/data/gold/`, then loads into PostgreSQL.
+
+**HDFS Gold structure:**
+```
+/data/gold/
+├── dim_customers/
+├── dim_sellers/
+├── dim_products/
+├── dim_order_status/
+├── dim_date/
+└── fct_order_items/
+```
 
 **Fact table:** `fct_order_items` (order-item granularity)
 
@@ -232,6 +246,9 @@ curl http://localhost:8000/api/v1/tables
 
 # Verify HDFS Bronze directories
 docker exec olist-hadoop hdfs dfs -ls /data/bronze/
+
+# Verify HDFS Gold directories (after pipeline run)
+docker exec olist-hadoop hdfs dfs -ls /data/gold/
 
 # Verify PostgreSQL Gold tables
 docker exec olist-postgres psql -U olist -d olist_dw -c "\dt"
@@ -298,7 +315,7 @@ The Olist dataset has known issues handled by the Silver ETL:
 
 ## Tech Stack
 
-- **Storage:** Hadoop HDFS (Bronze/Silver), PostgreSQL (Gold), SQLite (API)
+- **Storage:** Hadoop HDFS (Bronze/Silver/Gold), PostgreSQL (Gold), SQLite (API)
 - **Processing:** Apache Spark 3.5 (PySpark)
 - **Streaming:** Apache Kafka 7.6, Spark Structured Streaming
 - **Orchestration:** Apache Airflow 2.9

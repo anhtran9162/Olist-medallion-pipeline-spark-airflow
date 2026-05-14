@@ -42,13 +42,14 @@ services:
             echo 'HDFS is out of safemode.'
             break
           fi
-          echo "Safemode is ON, retry $i/30..."
+          echo "Safemode is ON, retry $$i/30..."
           sleep 2
         done
 
         su -s /bin/bash hadoop -c "/opt/hadoop/bin/hdfs dfs -mkdir -p /data/bronze"
         su -s /bin/bash hadoop -c "/opt/hadoop/bin/hdfs dfs -mkdir -p /data/bronze/stream_archive"
         su -s /bin/bash hadoop -c "/opt/hadoop/bin/hdfs dfs -mkdir -p /data/silver"
+        su -s /bin/bash hadoop -c "/opt/hadoop/bin/hdfs dfs -mkdir -p /data/gold"
         su -s /bin/bash hadoop -c "/opt/hadoop/bin/hdfs dfs -chmod -R 777 /data"
 
         echo 'Hadoop pseudo-distributed cluster is ready.'
@@ -158,6 +159,7 @@ services:
       SPARK_WORKER_CORES: 2
     volumes:
       - ./spark/jobs:/opt/spark/jobs
+      - ./config/spark/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |

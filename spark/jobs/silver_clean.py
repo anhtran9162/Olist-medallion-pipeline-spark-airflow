@@ -14,6 +14,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 from pyspark.sql.types import DoubleType, TimestampType
+from data_quality import run_silver_checks
 
 HDFS_BRONZE = "hdfs://namenode:9000/data/bronze"
 HDFS_SILVER = "hdfs://namenode:9000/data/silver"
@@ -44,16 +45,16 @@ DOUBLE_COLS = {
 
 
 def read_bronze_csv(spark, table_name):
-    """Read a Bronze CSV table from HDFS."""
+    """Read a Bronze Delta table from HDFS."""
     path = f"{HDFS_BRONZE}/{table_name}"
-    return spark.read.option("header", True).option("inferSchema", False).csv(path)
+    return spark.read.format("delta").load(path)
 
 
 def read_stream_archive(spark, topic):
-    """Read archived stream data from HDFS Parquet."""
+    """Read archived stream data from HDFS Delta."""
     path = f"{HDFS_BRONZE}/stream_archive/{topic}"
     try:
-        return spark.read.parquet(path)
+        return spark.read.format("delta").load(path)
     except Exception:
         print(f"  No stream archive data at {path}, skipping")
         return None
@@ -81,6 +82,8 @@ def process_orders(spark):
 
     # Read batch orders (90%)
     batch_df = read_bronze_csv(spark, "olist_orders_dataset")
+    # Drop Bronze metadata column before union with stream data
+    batch_df = batch_df.drop("ingestion_timestamp")
 
     # Read stream archive orders (10%)
     stream_df = read_stream_archive(spark, "ecommerce.orders.live")
@@ -171,7 +174,7 @@ def process_orders(spark):
     result = orders_imputed.select(orders_df.columns)
 
     # Write to Silver
-    result.write.mode("overwrite").parquet(f"{HDFS_SILVER}/olist_orders_dataset")
+    result.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(f"{HDFS_SILVER}/olist_orders_dataset")
     print(f"  Written {result.count()} rows to Silver/olist_orders_dataset")
     return result
 
@@ -181,6 +184,8 @@ def process_reviews(spark):
     print("Processing olist_order_reviews_dataset...")
 
     reviews_df = read_bronze_csv(spark, "olist_order_reviews_dataset")
+    # Drop Bronze metadata column
+    reviews_df = reviews_df.drop("ingestion_timestamp")
 
     # Cast timestamps
     ts_cols = TIMESTAMP_COLS["olist_order_reviews_dataset"]
@@ -274,7 +279,7 @@ def process_reviews(spark):
     # Impute null review scores with neutral 3
     reviews_df = reviews_df.fillna({"review_score": 3})
 
-    reviews_df.write.mode("overwrite").parquet(f"{HDFS_SILVER}/olist_order_reviews_dataset")
+    reviews_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(f"{HDFS_SILVER}/olist_order_reviews_dataset")
     print(f"  Written {reviews_df.count()} rows to Silver/olist_order_reviews_dataset")
 
 
@@ -282,6 +287,8 @@ def process_simple_table(spark, table_name):
     """Process a table with only type casting (no special transformations)."""
     print(f"Processing {table_name}...")
     df = read_bronze_csv(spark, table_name)
+    # Drop Bronze metadata column
+    df = df.drop("ingestion_timestamp")
 
     # Cast timestamps
     if table_name in TIMESTAMP_COLS:
@@ -316,7 +323,7 @@ def process_simple_table(spark, table_name):
         df = df.withColumn("geolocation_zip_code_prefix", F.col("geolocation_zip_code_prefix").cast("int"))
         df = cast_doubles(df, DOUBLE_COLS[table_name])
 
-    df.write.mode("overwrite").parquet(f"{HDFS_SILVER}/{table_name}")
+    df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(f"{HDFS_SILVER}/{table_name}")
     print(f"  Written {df.count()} rows to Silver/{table_name}")
 
 
@@ -346,6 +353,9 @@ def main():
     ]
     for table in simple_tables:
         process_simple_table(spark, table)
+
+    # Run Silver data quality checks
+    run_silver_checks(spark)
 
     spark.stop()
     print("Silver ETL complete.")

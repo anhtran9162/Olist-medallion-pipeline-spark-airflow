@@ -10,8 +10,10 @@ import os
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
+from data_quality import run_gold_checks
 
 HDFS_SILVER = "hdfs://namenode:9000/data/silver"
+HDFS_GOLD = "hdfs://namenode:9000/data/gold"
 
 PG_URL = os.environ.get("PG_URL", "jdbc:postgresql://postgres:5432/olist_dw")
 PG_USER = os.environ.get("PG_USER", "olist")
@@ -31,8 +33,8 @@ BRAZILIAN_HOLIDAYS = {
 
 
 def read_silver(spark, table_name):
-    """Read a Silver Parquet table from HDFS."""
-    return spark.read.parquet(f"{HDFS_SILVER}/{table_name}")
+    """Read a Silver Delta table from HDFS."""
+    return spark.read.format("delta").load(f"{HDFS_SILVER}/{table_name}")
 
 
 def drop_fct_if_exists(spark):
@@ -44,6 +46,13 @@ def drop_fct_if_exists(spark):
     stmt.close()
     conn.close()
     print("  Dropped fct_order_items (if existed) to release FK constraints")
+
+
+def write_to_hdfs(df, table_name):
+    """Write a DataFrame as Delta Lake to HDFS Gold layer."""
+    path = f"{HDFS_GOLD}/{table_name}"
+    df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").save(path)
+    print(f"  Written {df.count()} rows to HDFS Gold/{table_name}")
 
 
 def write_to_postgres(df, table_name):
@@ -295,6 +304,15 @@ def main():
         dim_order_status, dim_date,
     )
 
+    # Write to HDFS Gold layer
+    print("Writing to HDFS Gold layer...")
+    write_to_hdfs(dim_customers, "dim_customers")
+    write_to_hdfs(dim_sellers, "dim_sellers")
+    write_to_hdfs(dim_products, "dim_products")
+    write_to_hdfs(dim_order_status, "dim_order_status")
+    write_to_hdfs(dim_date, "dim_date")
+    write_to_hdfs(fct_order_items, "fct_order_items")
+
     # Write to PostgreSQL
     print("Writing to PostgreSQL...")
     drop_fct_if_exists(spark)
@@ -304,6 +322,9 @@ def main():
     write_to_postgres(dim_order_status, "dim_order_status")
     write_to_postgres(dim_date, "dim_date")
     write_to_postgres(fct_order_items, "fct_order_items")
+
+    # Run Gold data quality checks
+    run_gold_checks(spark)
 
     spark.stop()
     print("Gold load complete.")

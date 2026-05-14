@@ -62,7 +62,9 @@ Dữ liệu sau khi đi qua các bộ lọc khắt khe của tầng Silver sẽ 
 
 Tầng Gold đại diện cho trạng thái hoàn thiện nhất của dữ liệu, nơi dữ liệu được tổng hợp, định hình theo các góc nhìn nghiệp vụ cụ thể và được tối ưu hóa hoàn toàn cho tốc độ truy xuất.17 Khác với tầng Silver vốn tập trung vào làm sạch từng sự kiện, tầng Gold thực hiện các phép toán tập hợp (aggregations) và kết nối (joins) để tính toán trước (pre-calculate) các chỉ số hiệu suất trọng yếu (KPIs).
 
-Hệ thống sử dụng **PostgresDB** làm kho lưu trữ chính cho tầng Gold.3 Tại đây, các bảng phẳng từ tầng Silver được tái cấu trúc thành các mô hình dữ liệu đa chiều (Dimensional Models) nghiêm ngặt.21 Tầng Gold cung cấp cơ sở dữ liệu với độ trễ thấp, hỗ trợ trực tiếp cho các công cụ kinh doanh thông minh (Business Intelligence) như PowerBI, giúp ban điều hành có thể truy vấn doanh thu, thời gian trễ vận chuyển và biến động điểm đánh giá chỉ trong chớp mắt mà không cần phải thực hiện lại các phép tính toán phức tạp trên dữ liệu thô.
+Trước khi dữ liệu được phục vụ cho các công cụ BI, tầng Gold ghi dữ liệu dưới định dạng Parquet lên HDFS tại đường dẫn `/data/gold/`, đảm bảo mỗi tầng trong kiến trúc Medallion đều có storage vật lý riêng trên HDFS. Cấu trúc thư mục Gold trên HDFS bao gồm các bảng chiều và bảng sự kiện: `dim_customers`, `dim_sellers`, `dim_products`, `dim_order_status`, `dim_date`, và `fct_order_items`.
+
+Sau khi đã lưu trữ Parquet trên HDFS, hệ thống sử dụng **PostgresDB** làm kho lưu trữ phục vụ nghiệp vụ cho tầng Gold.3 Tại đây, các bảng phẳng từ tầng Silver được tái cấu trúc thành các mô hình dữ liệu đa chiều (Dimensional Models) nghiêm ngặt.21 Tầng Gold cung cấp cơ sở dữ liệu với độ trễ thấp, hỗ trợ trực tiếp cho các công cụ kinh doanh thông minh (Business Intelligence) như PowerBI, giúp ban điều hành có thể truy vấn doanh thu, thời gian trễ vận chuyển và biến động điểm đánh giá chỉ trong chớp mắt mà không cần phải thực hiện lại các phép tính toán phức tạp trên dữ liệu thô.
 
 ### **2.4. Khung Điều phối Tổng thể và Kiến trúc Tích hợp Mở rộng**
 

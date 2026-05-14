@@ -20,7 +20,7 @@ TOPICS = [
 
 
 def archive_topic(spark: SparkSession, topic: str):
-    """Read a Kafka topic as a stream and write to HDFS as Parquet."""
+    """Read a Kafka topic as a stream and write to HDFS as Delta Lake."""
     checkpoint_path = f"{HDFS_BASE}/_checkpoints/{topic}"
     output_path = f"{HDFS_BASE}/{topic}"
 
@@ -44,7 +44,7 @@ def archive_topic(spark: SparkSession, topic: str):
     )
 
     query = archive_df.writeStream \
-        .format("parquet") \
+        .format("delta") \
         .outputMode("append") \
         .option("path", output_path) \
         .option("checkpointLocation", checkpoint_path) \
