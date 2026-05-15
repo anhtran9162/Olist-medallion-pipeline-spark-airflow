@@ -1,11 +1,10 @@
-# Olist Medallion Pipeline — Spark & Airflow
+# Olist Medallion Data Lakehouse — Spark & Airflow
 
-End-to-end Big Data pipeline for the [Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce), built on the **Medallion Architecture** (Bronze → Silver → Gold) with real-time streaming simulation, orchestrated by Apache Airflow.
+End-to-end Big Data pipeline for the [Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce), built on the **Medallion Architecture** (Bronze → Silver → Gold) with real-time streaming simulation, **Delta Lake** table format, **PyDeequ** data quality checks, and orchestrated by Apache Airflow.
 
 ## Architecture Overview
 
 ![Architecture High-Level Design](img/Architecture_Skew.png)
-
 
 ```
                           ┌─────────────┐
@@ -29,27 +28,30 @@ End-to-end Big Data pipeline for the [Brazilian E-Commerce Public Dataset by Oli
                    │                          │
                    ▼                          ▼
      ┌──────────────────────────────────────────────────┐
-     │              BRONZE LAYER (HDFS)                  │
-     │  /data/bronze/{table}/          ← batch CSV      │
-     │  /data/bronze/stream_archive/   ← Kafka Parquet  │
+     │         BRONZE LAYER (HDFS + Delta Lake)          │
+     │  /data/bronze/{table}/          ← batch Delta    │
+     │  /data/bronze/stream_archive/   ← Kafka Delta    │
+     │  ✓ PyDeequ DQ checks on ingestion                │
      └──────────────────────┬───────────────────────────┘
                             │
                             ▼
      ┌──────────────────────────────────────────────────┐
-     │              SILVER LAYER (HDFS Parquet)          │
+     │         SILVER LAYER (HDFS + Delta Lake)          │
      │  • Deduplication & type casting                   │
      │  • Missing value imputation (median by zip)       │
      │  • NLP pipeline for Portuguese reviews            │
+     │  ✓ PyDeequ DQ checks after cleaning               │
      └──────────────────────┬───────────────────────────┘
                             │
                             ▼
      ┌──────────────────────────────────────────────────────────┐
-     │              GOLD LAYER (HDFS Parquet + PostgreSQL)      │
-     │  /data/gold/{dim/fct tables}/   ← Parquet files         │
+     │         GOLD LAYER (HDFS Delta + PostgreSQL)             │
+     │  /data/gold/{dim/fct tables}/   ← Delta Lake files      │
      │  Star Schema in PostgreSQL:                               │
      │    dim_customers │ dim_sellers │ dim_products             │
      │    dim_order_status │ dim_date                            │
      │    fct_order_items (fact)                                 │
+     │  ✓ PyDeequ DQ checks on star schema                      │
      └──────────────────────────────────────────────────────────┘
 ```
 
@@ -57,12 +59,12 @@ End-to-end Big Data pipeline for the [Brazilian E-Commerce Public Dataset by Oli
 
 | Service | Image | Port | Role |
 |---|---|---|---|
-| `hadoop` | `apache/hadoop:3.3.6` | 9870, 9000 | HDFS storage (Bronze + Silver + Gold) |
+| `hadoop` | `apache/hadoop:3.3.6` | 19870, 19000 | HDFS storage (Bronze + Silver + Gold) |
 | `postgres` | `postgres:16` | 5432 | Gold layer data warehouse |
 | `zookeeper` | `confluentinc/cp-zookeeper:7.6.0` | 2181 | Kafka coordination |
 | `kafka` | `confluentinc/cp-kafka:7.6.0` | 9092, 29092 | Real-time streaming |
-| `spark-master` | custom `bitnami/spark:3.5` | 18080, 7077 | Spark cluster master |
-| `spark-worker` | custom `bitnami/spark:3.5` | — | Spark executor |
+| `spark-master` | custom `apache/spark:3.5.5` | 18080, 7077 | Spark cluster master |
+| `spark-worker` | custom `apache/spark:3.5.5` | — | Spark executor |
 | `airflow` | custom `apache/airflow:2.9` | 8082 | DAG orchestration |
 | `api` | custom `python:3.12-slim` | 8000 | FastAPI + SQLite (simulated Olist API) |
 
@@ -74,7 +76,7 @@ End-to-end Big Data pipeline for the [Brazilian E-Commerce Public Dataset by Oli
 ├── config/
 │   ├── hadoop/                          # HDFS, YARN configs
 │   └── spark/
-│       └── spark-defaults.conf          # Spark master, HDFS, Kafka JARs
+│       └── spark-defaults.conf          # Spark master, HDFS, Delta Lake, Kafka JARs
 ├── data/
 │   └── brazilian-ecommerce/             # 9 raw CSV files
 ├── api/
@@ -88,12 +90,15 @@ End-to-end Big Data pipeline for the [Brazilian E-Commerce Public Dataset by Oli
 │       ├── order_producer.py            # Streams 10% orders to Kafka
 │       └── requirements.txt
 ├── spark/
-│   ├── Dockerfile                       # Bitnami Spark + JDBC + Kafka JARs
+│   ├── Dockerfile                       # Apache Spark + JDBC + Kafka + Delta + PyDeequ
 │   └── jobs/
-│       ├── bronze_ingest.py             # API → HDFS Bronze (batch 90%)
+│       ├── schemas.py                   # Explicit Bronze schema definitions
+│       ├── data_quality.py              # PyDeequ DQ checks (Bronze, Silver, Gold)
+│       ├── bronze_ingest.py             # API → HDFS Bronze (batch 90%) + DQ
 │       ├── bronze_stream_archive.py     # Kafka → HDFS Bronze (stream archive)
-│       ├── silver_clean.py             # Bronze → Silver (cleanse + NLP)
-│       └── gold_load.py                # Silver → HDFS Gold (Parquet) → PostgreSQL Gold
+│       ├── silver_clean.py             # Bronze → Silver (cleanse + NLP) + DQ
+│       ├── gold_load.py                # Silver → HDFS Gold (Delta) → PostgreSQL + DQ
+│       └── time_travel_examples.py     # Delta Lake time travel & versioning demo
 ├── airflow/
 │   ├── Dockerfile
 │   └── dags/
@@ -126,16 +131,18 @@ Loads all 9 Olist CSVs into a SQLite database and exposes them as REST endpoints
 ### 2. Bronze Layer — Batch + Stream Ingestion
 
 **Data split strategy:** Orders are sorted chronologically by `order_purchase_timestamp`:
-- **90%** → batch loaded from FastAPI to HDFS `/data/bronze/` as CSV
-- **10%** → streamed to Kafka topics, then archived to HDFS `/data/bronze/stream_archive/` as Parquet
+- **90%** → batch loaded from FastAPI to HDFS `/data/bronze/` as Delta Lake
+- **10%** → streamed to Kafka topics, then archived to HDFS `/data/bronze/stream_archive/` as Delta Lake
 
 Reference tables (customers, products, sellers, etc.) are 100% batch loaded.
+
+**Schema enforcement:** All Bronze tables use explicit `StructType` schemas defined in `schemas.py` — all columns are `StringType` in Bronze (raw layer preserves source types). Silver layer handles type casting.
 
 **Kafka topics:**
 - `ecommerce.orders.live` — order events with `customer_id` as message key
 - `ecommerce.logistics.updates` — delivery tracking events
 
-**Stream archive (`bronze_stream_archive.py`):** A Spark Structured Streaming job that continuously reads Kafka events and writes them to HDFS Parquet with checkpointing for exactly-once semantics. This ensures Bronze layer immutability — events are permanently archived before Kafka's retention policy purges them.
+**Stream archive (`bronze_stream_archive.py`):** A Spark Structured Streaming job that continuously reads Kafka events and writes them to HDFS Delta Lake with checkpointing for exactly-once semantics. This ensures Bronze layer immutability — events are permanently archived before Kafka's retention policy purges them.
 
 **HDFS Bronze structure:**
 ```
@@ -150,14 +157,14 @@ Reference tables (customers, products, sellers, etc.) are 100% batch loaded.
 ├── olist_geolocation_dataset/         ← batch (100%)
 ├── product_category_name_translation/ ← batch (100%)
 └── stream_archive/                    ← immutable Kafka event archive
-    ├── ecommerce.orders.live/         ← Parquet from order events
-    ├── ecommerce.logistics.updates/   ← Parquet from logistics events
+    ├── ecommerce.orders.live/         ← Delta from order events
+    ├── ecommerce.logistics.updates/   ← Delta from logistics events
     └── _checkpoints/                  ← Spark streaming checkpoints
 ```
 
 ### 3. Silver Layer — PySpark ETL
 
-Reads Bronze data (batch CSVs + stream archive Parquet), applies transformations, writes Parquet to HDFS `/data/silver/`.
+Reads Bronze Delta tables (batch + stream archive), applies transformations, writes Delta Lake to HDFS `/data/silver/`.
 
 **Transformations:**
 
@@ -170,9 +177,9 @@ Reads Bronze data (batch CSVs + stream archive Parquet), applies transformations
 | **NLP Pipeline** | Portuguese review text cleaning: lowercase → HTML tag removal → regex character normalization (preserving accented chars) → Portuguese stopword removal (200+ words) → whitespace normalization |
 | **Computed Columns** | `product_volume_cm3` = length × width × height |
 
-### 4. Gold Layer — HDFS Parquet + PostgreSQL Star Schema
+### 4. Gold Layer — HDFS Delta Lake + PostgreSQL Star Schema
 
-Reads Silver Parquet from HDFS, builds star schema tables, writes Parquet to HDFS `/data/gold/`, then loads into PostgreSQL.
+Reads Silver Delta from HDFS, builds star schema tables, writes Delta Lake to HDFS `/data/gold/`, then loads into PostgreSQL.
 
 **HDFS Gold structure:**
 ```
@@ -214,7 +221,31 @@ Reads Silver Parquet from HDFS, builds star schema tables, writes Parquet to HDF
 | `dim_order_status` | `status_key` | `status_name` (delivered, shipped, canceled, etc.) |
 | `dim_date` | `date_key` (YYYYMMDD) | `full_date`, `day_of_week`, `month_name`, `quarter`, `year`, `is_holiday_brazil` |
 
-### 5. Airflow DAG
+### 5. Data Quality — PyDeequ
+
+Automated data quality checks run at each layer transition using [PyDeequ](https://github.com/awslabs/python-deequ):
+
+| Layer | Checks |
+|---|---|
+| **Bronze** | `order_id` completeness + uniqueness, `customer_id` completeness, `product_id` completeness |
+| **Silver** | `order_id` completeness + uniqueness, `review_score` range [1-5], `price` non-negative |
+| **Gold** | `order_item_key` completeness + uniqueness, FK completeness, `item_price` & `freight_value` non-negative, `customer_key` uniqueness |
+
+If any critical check fails, the pipeline halts with an exception.
+
+### 6. Delta Lake Features
+
+All data across Bronze, Silver, and Gold layers is stored in **Delta Lake** format, providing:
+
+- **ACID transactions** on HDFS — safe concurrent reads/writes
+- **Schema enforcement** — reject writes with incompatible schemas
+- **Time travel** — query historical versions via `versionAsOf` / `timestampAsOf`
+- **Incremental processing** — `delta` streaming reads for downstream consumers
+- **Data versioning** — full commit history for audit and rollback
+
+See `spark/jobs/time_travel_examples.py` for a demo of version querying and history inspection.
+
+### 7. Airflow DAG
 
 ```
 init_api ──► bronze_batch_ingest ──► silver_clean ──► gold_load
@@ -226,11 +257,11 @@ init_api ──► bronze_batch_ingest ──► silver_clean ──► gold_loa
 | Task | Operator | Job |
 |---|---|---|
 | `init_api` | PythonOperator | Health check FastAPI |
-| `bronze_batch_ingest` | SparkSubmitOperator | `bronze_ingest.py` |
+| `bronze_batch_ingest` | BashOperator (spark-submit) | `bronze_ingest.py` + DQ checks |
 | `kafka_producer` | BashOperator | `order_producer.py` |
-| `bronze_stream_archive` | SparkSubmitOperator | `bronze_stream_archive.py` |
-| `silver_clean` | SparkSubmitOperator | `silver_clean.py` |
-| `gold_load` | SparkSubmitOperator | `gold_load.py` |
+| `bronze_stream_archive` | BashOperator (spark-submit) | `bronze_stream_archive.py` (120s window) |
+| `silver_clean` | BashOperator (spark-submit) | `silver_clean.py` + DQ checks |
+| `gold_load` | BashOperator (spark-submit) | `gold_load.py` + DQ checks |
 
 ## Quick Start
 
@@ -261,7 +292,7 @@ docker exec olist-postgres psql -U olist -d olist_dw -c "SELECT COUNT(*) FROM fc
 
 | Service | URL | Credentials |
 |---|---|---|
-| Hadoop NameNode | http://localhost:9870 | — |
+| Hadoop NameNode | http://localhost:19870 | — |
 | Spark Master | http://localhost:18080 | — |
 | Airflow | http://localhost:8082 | admin / admin |
 | FastAPI Docs | http://localhost:8000/docs | — |
@@ -284,19 +315,28 @@ docker exec olist-airflow airflow dags trigger olist_medallion_pipeline
 docker exec olist-spark-master spark-submit \
   --master spark://spark-master:7077 \
   --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 \
+  --conf spark.hadoop.dfs.client.use.datanode.hostname=true \
+  --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension \
+  --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog \
   /opt/spark/jobs/bronze_ingest.py
 
 # Silver ETL
 docker exec olist-spark-master spark-submit \
   --master spark://spark-master:7077 \
   --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 \
+  --conf spark.hadoop.dfs.client.use.datanode.hostname=true \
+  --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension \
+  --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog \
   /opt/spark/jobs/silver_clean.py
 
 # Gold load
 docker exec olist-spark-master spark-submit \
   --master spark://spark-master:7077 \
   --conf spark.hadoop.fs.defaultFS=hdfs://namenode:9000 \
-  --conf spark.jars=/opt/bitnami/spark/jars/postgresql-42.7.3.jar \
+  --conf spark.hadoop.dfs.client.use.datanode.hostname=true \
+  --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension \
+  --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog \
+  --conf spark.jars=/opt/spark/jars/postgresql-42.7.3.jar \
   /opt/spark/jobs/gold_load.py
 ```
 
@@ -315,9 +355,10 @@ The Olist dataset has known issues handled by the Silver ETL:
 
 ## Tech Stack
 
-- **Storage:** Hadoop HDFS (Bronze/Silver/Gold), PostgreSQL (Gold), SQLite (API)
+- **Storage:** Hadoop HDFS + Delta Lake (Bronze/Silver/Gold), PostgreSQL (Gold), SQLite (API)
 - **Processing:** Apache Spark 3.5 (PySpark)
 - **Streaming:** Apache Kafka 7.6, Spark Structured Streaming
+- **Data Quality:** PyDeequ
 - **Orchestration:** Apache Airflow 2.9
 - **API:** FastAPI, Uvicorn
 - **Infrastructure:** Docker Compose
