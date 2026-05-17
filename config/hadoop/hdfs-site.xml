@@ -16,4 +16,12 @@
     <name>dfs.datanode.data.dir</name>
     <value>file:///opt/hadoop/hdfs/datanode</value>
   </property>
+  <property>
+    <name>dfs.datanode.http-address</name>
+    <value>0.0.0.0:9864</value>
+  </property>
+  <property>
+    <name>dfs.client.use.datanode.hostname</name>
+    <value>false</value>
+  </property>
 </configuration>

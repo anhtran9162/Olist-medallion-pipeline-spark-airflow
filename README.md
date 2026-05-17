@@ -4,7 +4,16 @@ End-to-end Big Data pipeline for the [Brazilian E-Commerce Public Dataset by Oli
 
 ## Architecture Overview
 
-![Architecture High-Level Design](img/Architecture_Skew.png)
+### Lakehouse Architecture
+
+![Lakehouse Architecture](img/Lakehouse_Architecture.gif)
+
+### Medallion Architecture
+
+![Medallion Architecture](img/Medallion_Architecture.gif)
+
+
+### Architecture Blueprint
 
 ```
                           ┌─────────────┐
